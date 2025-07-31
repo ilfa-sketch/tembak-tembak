@@ -5,21 +5,54 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Game Tembak Tembak</title>
     <style>
-        body {
+        * {
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
+        }
+        body {
             background: #222;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
             overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #gameContainer {
+            position: relative;
         }
         #gameCanvas {
-            display: block;
-            margin: 0 auto;
             background: #111;
+            display: block;
+            border: 2px solid #444;
+        }
+        #gameInfo {
+            color: white;
+            text-align: center;
+            margin-top: 10px;
         }
     </style>
 </head>
 <body>
-    <canvas id="gameCanvas" width="800" height="600"></canvas>
-    <script src="game.js"></script>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        <div id="gameInfo">Skor: <span id="score">0</span></div>
+    </div>
+    
+    <script>
+        // Script dasar untuk memastikan canvas bekerja
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Gambar kotak uji
+        ctx.fillStyle = '#4CAF50';
+        ctx.fillRect(50, 50, 100, 100);
+        
+        // Teks demo
+        ctx.fillStyle = 'white';
+        ctx.font = '20px Arial';
+        ctx.fillText('Game Tembak Tembak', 300, 300);
+    </script>
 </body>
-</html>
+    </html>
