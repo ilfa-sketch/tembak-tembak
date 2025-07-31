@@ -4,20 +4,32 @@ on:
   push:
     branches: [main]
 
+permissions:
+  pages: write
+  id-token: write
+
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         
-      - name: Setup Pages
-        uses: actions/configure-pages@v3
-        
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v2
-        with:
-          path: '.' # Upload seluruh folder repo
+      - name: Validate HTML
+        run: |
+          if ! grep -q '<!DOCTYPE html>' index.html; then
+            echo "❌ Error: File index.html tidak valid!"
+            exit 1
+          fi
+          echo "✅ HTML validasi dasar berhasil"
           
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v2
