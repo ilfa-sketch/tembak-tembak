@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aircraft Game</title>
+  <style>
+    body {
+      margin: 0;
+      background: #000;
+      overflow: hidden;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100vh;
+      background: #111;
+    }
+    .controls {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      touch-action: none;
+      z-index: 30;
+    }
+    .stick {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.5);
+      position: absolute;
+      left: 30px;
+      top: 30px;
+    }
+    .fire-btn {
+      position: absolute;
+      bottom: 40px;
+      right: 40px;
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: rgba(255,0,0,0.6);
+      touch-action: none;
+      z-index: 30;
+    }
+
+    /* sound / pause buttons */
+    #soundToggle, #pauseToggle {
+      position: absolute;
+      top: 18px;
+      font-size: 28px;
+      color: white;
+      cursor: pointer;
+      user-select: none;
+      z-index: 40;
+      padding: 6px;
+      background: rgba(0,0,0,0.25);
+      border-radius: 8px;
+    }
+    #soundToggle { right: 14px; }
+    #pauseToggle { left: 14px; }
+
+    /* small overlay when paused */
+    #pausedOverlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      background: rgba(0,0,0,0.4);
+      color: white;
+      font-size: 28px;
+      pointer-events: none;
+    }
+    #pausedOverlay.show { display:flex; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+
+  <div class="controls" id="joystick">
+    <div class="stick" id="stick"></div>
+  </div>
+
+  <div class="fire-btn" id="fireBtn"></div>
+
+  <!-- UI controls -->
+  <div id="pauseToggle">⏸</div>
+  <div id="soundToggle">🔊</div>
+
+  <!-- Audio elements (files must exist in same folder) -->
+  <audio id="bgMusic" src="music.mp3" loop></audio>
+  <audio id="shootElem" src="shoot.mp3"></audio>
+  <audio id="explosionElem" src="explosion.mp3"></audio>
+
+  <div id="pausedOverlay">PAUSED</div>
+
+  <script>
+/* ---------------------------
+   Game code (based on your original)
+   - I fixed syntax bugs and added audio + controls
+   - Kept structure (setInterval spawn/update, joystick, fire)
+   --------------------------- */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+let score = 0;
+let powerActive = false;
+let lives = 3;
+let bullets = [];
+let enemies = [];
+let explosions = [];
+let powerMode = false;
+let powerTimer = 0;
+let paused = false;
+
+// Load images (filenames you provided)
+const imgPlayer = new Image(); imgPlayer.src = "original.png";
+const imgPlayerBuff = new Image(); imgPlayerBuff.src = "super.png";
+const imgEnemy = new Image(); imgEnemy.src = "musuh.png";
+const imgBackground = new Image(); imgBackground.src = "background.jpg";
+
+// Audio elements
+const bgMusic = document.getElementById('bgMusic');
+const shootElem = document.getElementById('shootElem');
+const explosionElem = document.getElementById('explosionElem');
+
+// Web Audio API to boost SFX louder than 1.0
+let audioCtx = null;
+let shootGain = 1.0;
+let explosionGain = 1.0;
+function initAudioContextOnce() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // create media element sources + gains
+    const shootSrc = audioCtx.createMediaElementSource(shootElem);
+    const explosionSrc = audioCtx.createMediaElementSource(explosionElem);
+    const bgSrc = audioCtx.createMediaElementSource(bgMusic);
+
+    const bgGainNode = audioCtx.createGain();
+    const shootGainNode = audioCtx.createGain();
+    const explosionGainNode = audioCtx.createGain();
+
+    // user requested music=1.0, effects louder. We'll clamp music to 1.0 and set effects gain >1
+    bgGainNode.gain.value = 1.0; // background
+    shootGainNode.gain.value = 1.5; // attempt to amplify
+    explosionGainNode.gain.value = 1.5;
+
+    // connect
+    bgSrc.connect(bgGainNode).connect(audioCtx.destination);
+    shootSrc.connect(shootGainNode).connect(audioCtx.destination);
+    explosionSrc.connect(explosionGainNode).connect(audioCtx.destination);
+
+    // keep references so we can optionally adjust later
+    shootGain = shootGainNode;
+    explosionGain = explosionGainNode;
+  } catch (e) {
+    // Web Audio might be unavailable; fall back to element volume
+    shootElem.volume = 0.4;
+    explosionElem.volume = 1.0;
+    bgMusic.volume = 1.0;
+    console.warn('Web Audio init failed, falling back to simple audio. Error:', e);
+  }
+}
+
+// ensure audio starts on first interaction (autoplay policies)
+function resumeAudioOnFirstInteraction() {
+  function start() {
+    initAudioContextOnce();
+    if (bgMusic.paused) {
+      bgMusic.play().catch(()=>{ /* ignore play error until real interaction */ });
+    }
+    window.removeEventListener('pointerdown', start);
+    window.removeEventListener('touchstart', start);
+  }
+  window.addEventListener('pointerdown', start, {once:true});
+  window.addEventListener('touchstart', start, {once:true});
+}
+resumeAudioOnFirstInteraction();
+
+// Player
+const player = {
+  x: canvas.width/2,
+  y: canvas.height - 100,
+  size: 40,
+  speed: 5
+};
+
+function spawnEnemy(){
+  if (paused) return;
+  enemies.push({
+    x: Math.random()*(canvas.width-40),
+    y: -40,
+    size: 80,
+    speed: 4,
+    exploding: false,
+    explodeStart: 0
+  });
+}
+
+function shoot(){
+  if (powerMode) {
+    // 5 directions, 5x bigger than normal bullet
+    const normalSize = 6;
+    const size = normalSize * 2;
+    const speed = -8;
+    const angles = [-0.5, -0.25, 0, 0.25, 0.5]; // dx will be angle * factor
+    angles.forEach(a => {
+      bullets.push({
+        x: player.x,
+        y: player.y - 20,
+        dx: a * 10,
+        dy: speed,
+        size: size
+      });
+    });
+  } else {
+    bullets.push({ x: player.x, y: player.y - 20, dx: 0, dy: -8, size: 6 });
+  }
+
+  // play shoot sound (fast reset)
+  try {
+    shootElem.currentTime = 0;
+    shootElem.play().catch(()=>{ /* ignore */ });
+  } catch(e){ /* ignore */ }
+}
+
+function update(){
+  // if paused, draw a paused overlay and skip logic updates
+  if (paused) {
+    // still draw background and current objects but no updates (so screen freezes)
+    draw(true);
+    return;
+  }
+
+  // move bullets
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.dx;
+    b.y += b.dy;
+    // remove offscreen
+    if (b.x < -200 || b.x > canvas.width + 200 || b.y < -200 || b.y > canvas.height + 200) bullets.splice(i,1);
+  }
+
+  // move enemies and check collisions
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    if (!e.exploding) {
+      e.y += e.speed;
+      // collision with player (circle approx)
+      const dxp = (e.x + e.size/2) - player.x;
+      const dyp = (e.y + e.size/2) - player.y;
+      const distP = Math.hypot(dxp, dyp);
+      if (distP < (e.size/2 + player.size/2)) {
+        // hit player
+        enemies.splice(i,1);
+        playerHit();
+        continue;
+      }
+
+      // check bullets
+      let hitIndex = -1;
+      for (let bi = bullets.length - 1; bi >= 0; bi--) {
+        const b = bullets[bi];
+        const dx = b.x - (e.x + e.size/2);
+        const dy = b.y - (e.y + e.size/2);
+        const dist = Math.hypot(dx, dy);
+        if (dist < (b.size + e.size/2)) {
+          hitIndex = bi;
+          break;
+        }
+      }
+
+      if (hitIndex >= 0) {
+        // hit: remove bullet, mark explosion
+        bullets.splice(hitIndex, 1);
+        e.exploding = true;
+        e.explodeStart = performance.now();
+        explosions.push({ x: e.x + e.size/2, y: e.y + e.size/2, t: performance.now(), life: 400, r: 10, alpha: 1 });
+        score++;
+        document.title = 'Score: ' + score;
+
+        // play explosion sound
+        try {
+          explosionElem.currentTime = 0;
+          explosionElem.play().catch(()=>{});
+        } catch(e){}
+
+        // grant power when reaching multiples of 10 (exactly like original)
+        if (score % 20 === 0 && !powerActive) {
+  powerMode = true;
+  powerActive = true; // tandai sudah aktif supaya tidak ditimpa
+  powerTimer = Date.now();
+  player.size = 80;
+}
+        // keep the enemy object to let it show explosion then removed later
+        continue;
+      }
+
+      // offscreen enemy => treat as miss (hurt player)
+      if (e.y > canvas.height + 80) {
+        enemies.splice(i,1);
+        playerHit();
+        continue;
+      }
+    } else {
+      // exploding: remove after short time
+      if (performance.now() - e.explodeStart > 300) {
+        enemies.splice(i,1);
+      }
+    }
+  }
+
+  // update explosions life
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const ex = explosions[i];
+    const t = performance.now() - ex.t;
+    if (t > ex.life) explosions.splice(i,1);
+  }
+
+  // power timeout
+  if (powerMode && Date.now() - powerTimer > 5000) {
+  powerMode = false;
+  powerActive = false; // reset flag agar bisa aktif lagi di kelipatan skor berikutnya
+  player.size = 40;
+}  
+
+  // spawn handled by setInterval spawnEnemy (which checks paused)
+
+  // draw
+  draw(false);
+}
+
+function draw(justOverlayOnly = false){
+  // draw background
+  if (imgBackground.complete) {
+    ctx.drawImage(imgBackground, 0, 0, canvas.width, canvas.height);
+  } else {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+
+  // draw bullets under player
+  bullets.forEach(b => {
+    ctx.beginPath();
+    ctx.fillStyle = powerMode ? '#ffd966' : '#ffffff';
+    ctx.arc(b.x, b.y, b.size, 0, Math.PI*2);
+    ctx.fill();
+  });
+
+  // draw enemies (if exploding, we rely on explosions array for visuals)
+  enemies.forEach(e => {
+    if (!e.exploding) {
+      if (imgEnemy.complete) ctx.drawImage(imgEnemy, e.x, e.y, e.size, e.size);
+      else {
+        ctx.fillStyle = '#ff6b6b';
+        ctx.fillRect(e.x, e.y, e.size, e.size);
+      }
+    }
+  });
+
+  // draw player
+  if (powerMode && imgPlayerBuff.complete) {
+    ctx.drawImage(imgPlayerBuff, player.x - player.size/2, player.y - player.size/2, player.size, player.size);
+  } else if (imgPlayer.complete) {
+    ctx.drawImage(imgPlayer, player.x - player.size/2, player.y - player.size/2, player.size, player.size);
+  } else {
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.fillStyle = powerMode ? '#ffd166' : '#4dd0e1';
+    ctx.beginPath();
+    ctx.moveTo(0, -player.size/2);
+    ctx.lineTo(player.size/2, player.size/2);
+    ctx.lineTo(0, player.size/4);
+    ctx.lineTo(-player.size/2, player.size/2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // explosions visuals
+  explosions.forEach(ex => {
+    const t = (performance.now() - ex.t) / ex.life;
+    const p = Math.min(1, t);
+    const r = ex.r + p * 28;
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(255, ${120 + 80 * (1 - p)}, 0, ${1 - p})`;
+    ctx.arc(ex.x, ex.y, r, 0, Math.PI*2);
+    ctx.fill();
+  });
+
+  // HUD: score & hearts
+  ctx.fillStyle = 'red';
+  ctx.font = '20px Arial';
+  ctx.fillText('Score: ' + score, 20, 30);
+
+  for (let i = 0; i < Math.max(0, lives); i++) {
+    drawHeart(20 + i * 30, 60, 10);
+  }
+
+  // if paused show overlay
+  const pausedOverlay = document.getElementById('pausedOverlay');
+  if (paused) {
+    pausedOverlay.classList.add('show');
+  } else {
+    pausedOverlay.classList.remove('show');
+  }
+}
+
+function drawHeart(x, y, size) {
+  ctx.fillStyle = 'red';
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.bezierCurveTo(x, y - size/2, x - size, y - size/2, x - size, y);
+  ctx.bezierCurveTo(x - size, y + size/2, x, y + size/1.2, x, y + size);
+  ctx.bezierCurveTo(x, y + size/1.2, x + size, y + size/2, x + size, y);
+  ctx.bezierCurveTo(x + size, y - size/2, x, y - size/2, x, y);
+  ctx.fill();
+}
+
+function playerHit() {
+  lives--;
+  if (lives <= 0) {
+    // game over
+    setTimeout(()=> {
+      alert('Game Over! Score: ' + score);
+      location.reload();
+    }, 50);
+  } else {
+    // reset player position briefly
+    player.x = canvas.width/2;
+    player.y = canvas.height - 120;
+  }
+}
+
+/* -------------------------------
+   Input: Fire / Joystick / Pause / Sound
+   Keep logic similar to original code
+   ------------------------------- */
+
+// Fire button control
+let firing = false;
+document.getElementById('fireBtn').addEventListener('touchstart', ()=>{firing=true;});
+document.getElementById('fireBtn').addEventListener('touchend', ()=>{firing=false;});
+setInterval(()=>{ if (firing && !paused) shoot(); }, 200);
+
+// Joystick control
+const joystick = document.getElementById('joystick');
+const stick = document.getElementById('stick');
+let joyActive = false;
+let joyX = 0, joyY = 0;
+
+joystick.addEventListener('touchstart', (e)=>{ joyActive = true; });
+joystick.addEventListener('touchend', (e)=>{ joyActive = false; stick.style.left = '30px'; stick.style.top = '30px'; });
+joystick.addEventListener('touchmove', (e)=>{
+  const rect = joystick.getBoundingClientRect();
+  const touch = e.touches[0];
+  const x = touch.clientX - rect.left - rect.width/2;
+  const y = touch.clientY - rect.top - rect.height/2;
+  joyX = Math.max(-1, Math.min(1, x / 50));
+  joyY = Math.max(-1, Math.min(1, y / 50));
+  stick.style.left = 30 + joyX * 30 + 'px';
+  stick.style.top = 30 + joyY * 30 + 'px';
+});
+
+// move loop (same idea as original)
+function movePlayerLoop() {
+  if (joyActive && !paused) {
+    player.x += joyX * player.speed;
+    player.y += joyY * player.speed;
+    if (player.x < player.size / 2) player.x = player.size / 2;
+    if (player.x > canvas.width - player.size / 2) player.x = canvas.width - player.size / 2;
+    if (player.y < player.size / 2) player.y = player.size / 2;
+    if (player.y > canvas.height - player.size / 2) player.y = canvas.height - player.size / 2;
+  }
+  requestAnimationFrame(movePlayerLoop);
+}
+movePlayerLoop();
+
+// Sound toggle & pause toggle UI
+const soundToggle = document.getElementById('soundToggle');
+const pauseToggle = document.getElementById('pauseToggle');
+
+soundToggle.addEventListener('click', () => {
+  // toggle mute on bgMusic (SFX still play)
+  bgMusic.muted = !bgMusic.muted;
+  soundToggle.textContent = bgMusic.muted ? '🔇' : '🔊';
+  if (!bgMusic.muted && bgMusic.paused) {
+    bgMusic.play().catch(()=>{});
+  }
+});
+
+// Pause/resume
+pauseToggle.addEventListener('click', () => {
+  paused = !paused;
+  pauseToggle.textContent = paused ? '▶️' : '⏸';
+  if (!paused) {
+    // resume music if it was playing before
+    if (bgMusic.paused && !bgMusic.muted) bgMusic.play().catch(()=>{});
+  }
+});
+
+/* ------------------------------
+   Start intervals & audio defaults
+   ------------------------------ */
+setInterval(() => {
+  // spawn beberapa sekaligus
+  for (let i = 0; i < 3; i++) spawnEnemy();
+}, 800);
+setInterval(() => {
+  // update() contains internal paused-check
+  update();
+}, 30);
+
+// set volumes (bgMusic uses element volume; SFX uses WebAudio gain if available)
+bgMusic.volume = 1.0; // max allowed by audio element
+shootElem.volume = 1.0;
+explosionElem.volume = 1.0;
+// If WebAudio was created, its gain nodes were set to 1.5 earlier in initAudioContextOnce()
+
+// try to start audio on first interaction
+document.body.addEventListener('pointerdown', function startAudio(){
+  initAudioContextOnce();
+  if (bgMusic.paused && !bgMusic.muted) {
+    bgMusic.play().catch(()=>{});
+  }
+  document.body.removeEventListener('pointerdown', startAudio);
+}, { once: true });
+
+  </script>
+</body>
+</html>
